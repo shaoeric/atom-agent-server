@@ -18,7 +18,12 @@ class Settings(BaseSettings):
     task_stream_key: str = "agent:tasks:pending"
     consumer_group: str = "workers"
     consumer_name: str = "worker-1"
-    dashscope_api_key: str | None = None
+
+    #: OpenAI-compatible Chat Completions (via ``openai.AsyncClient``).
+    openai_api_key: str | None = None
+    #: Custom API base URL (e.g. vLLM, Azure OpenAI proxy). Empty = SDK default.
+    openai_base_url: str = ""
+    openai_model: str = "gpt-4o-mini"
 
 
 @lru_cache

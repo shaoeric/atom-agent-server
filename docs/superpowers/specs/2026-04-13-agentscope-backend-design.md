@@ -87,7 +87,7 @@
 ## 7. Agent 与 CLI 执行
 
 - **mock**：无 LLM，用于压测与 CI；模拟分段日志与延迟。
-- **agent**：`ReActAgent` + `stream_printing_messages`，工具集中注册 **CLI 工具**（`cli_runner` 异步子进程，按行/块写入事件流）。
+- **agent**：`ReActAgent` + `stream_printing_messages`；LLM 使用 **OpenAI 兼容** `OpenAIChatModel`（`openai` 异步客户端），支持通过 `OPENAI_BASE_URL` / `openai_base_url` 指定自定义 base URL（如自建网关、vLLM 等）。工具集中注册 **CLI 工具**（`cli_runner` 异步子进程，按行/块写入事件流）。
 - **Runtime**：执行路径对齐 AgentScope 1.x 管道；`AgentApp` 可作为可选独立服务挂载（本仓库以任务 API 为主，避免与长轮询 SSE 模型重复）。
 
 ## 8. 取消与 Windows

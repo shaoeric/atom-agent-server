@@ -18,14 +18,18 @@
 
 环境变量（可用 `.env`，见 `Settings`）：
 
-| 变量 | 说明 |
-|------|------|
-| `STORE_BACKEND` | `memory`（默认）或 `redis` |
-| `EMBED_WORKER` | `memory` 时是否在 API 进程内启动 worker，默认 `true` |
-| `REDIS_URL` | `STORE_BACKEND=redis` 时，默认 `redis://127.0.0.1:6379/0` |
-| `MAX_CONCURRENT_TASKS` | 默认 `50` |
-| `DASHSCOPE_API_KEY` | `mode=agent` 时 LLM 需要 |
-| `MOCK_AGENT_DEFAULT` | 默认 `true`（本地默认 mock） |
+
+| 变量                     | 说明                                                       |
+| ---------------------- | -------------------------------------------------------- |
+| `STORE_BACKEND`        | `memory`（默认）或 `redis`                                    |
+| `EMBED_WORKER`         | `memory` 时是否在 API 进程内启动 worker，默认 `true`                 |
+| `REDIS_URL`            | `STORE_BACKEND=redis` 时，默认 `redis://127.0.0.1:6379/0`    |
+| `MAX_CONCURRENT_TASKS` | 默认 `50`                                                  |
+| `OPENAI_API_KEY`       | `mode=agent` 时 LLM 需要（也可用配置项 `openai_api_key`）           |
+| `OPENAI_BASE_URL`      | 可选，OpenAI 兼容服务根地址（如 `http://localhost:8000/v1`），留空则用官方默认 |
+| `OPENAI_MODEL`         | 可选，默认 `gpt-4o-mini`                                      |
+| `MOCK_AGENT_DEFAULT`   | 默认 `true`（本地默认 mock）                                     |
+
 
 ## 运行
 
@@ -41,9 +45,7 @@ uvicorn agent_backend.main:app --host 0.0.0.0 --port 8080
 ### Redis 后端（持久化 / 多进程 worker）
 
 1. 启动 Redis。
-
 2. 设置 `STORE_BACKEND=redis`，启动 API（同上）。
-
 3. Worker（单独终端）：
 
 ```bash
@@ -51,13 +53,13 @@ set STORE_BACKEND=redis
 python -m agent_backend.worker
 ```
 
-4. 提交任务（示例）：
+1. 提交任务（示例）：
 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/v1/tasks -H "Content-Type: application/json" -d "{\"prompt\":\"hello\",\"mode\":\"mock\"}"
 ```
 
-5. SSE 订阅（`task_id` 替换为返回的 id）：
+1. SSE 订阅（`task_id` 替换为返回的 id）：
 
 ```bash
 curl -N "http://127.0.0.1:8080/api/v1/tasks/<task_id>/events?from_seq=0"
@@ -69,6 +71,14 @@ curl -N "http://127.0.0.1:8080/api/v1/tasks/<task_id>/events?from_seq=0"
 python -m agent_backend.examples.demo_cli slow
 python -m agent_backend.examples.demo_cli sleep --seconds 2
 ```
+
+## Python 客户端（提交任务 + SSE 流式）
+
+```bash
+python -m agent_backend.examples.client_sse --prompt "hello" --mode mock
+```
+
+实现见 [`agent_backend/examples/client_sse.py`](agent_backend/examples/client_sse.py)：`submit_task`、`iter_sse_events` 可拷贝到业务代码中；断线重连时把上次收到的最大 `seq` 传给 `--from-seq`。
 
 ## 测试
 

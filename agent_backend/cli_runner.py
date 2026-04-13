@@ -10,12 +10,16 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agent_backend.store_protocol import TaskStore
 
+# 工具返回给 LLM 的合并日志最大长度（仍可通过 SSE 看完整流式事件）
+_DEFAULT_MAX_TOOL_CHARS = 12000
+
 
 async def _read_lines(
     stream: asyncio.StreamReader | None,
     task_id: str,
     store: "TaskStore",
     stream_name: str,
+    capture: list[str] | None = None,
 ) -> None:
     if stream is None:
         return
@@ -26,6 +30,14 @@ async def _read_lines(
         text = line.decode(errors="replace").rstrip("\n\r")
         if text:
             await store.append_event(task_id, stream_name, chunk=text)
+            if capture is not None:
+                capture.append(f"[{stream_name}] {text}")
+
+
+def _truncate_for_tool(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 32] + "\n... [truncated for tool response]"
 
 
 async def run_cli_streaming(
@@ -35,8 +47,16 @@ async def run_cli_streaming(
     *,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
-) -> int:
-    """Run argv[0] with argv[1:]; stream stdout/stderr as events. Return exit code."""
+    max_tool_chars: int = _DEFAULT_MAX_TOOL_CHARS,
+) -> tuple[int, str]:
+    """Run argv[0] with argv[1:].
+
+    - 仍按行写入 store（stdout/stderr 事件），供 SSE 订阅。
+    - 同时合并为一段文本返回，供 ToolResponse 给 LLM 阅读。
+
+    Returns:
+        (exit_code, captured_log)  ``captured_log`` 可能因 ``max_tool_chars`` 被截断。
+    """
     if not argv:
         raise ValueError("argv must not be empty")
     exec_env = {**os.environ, **(env or {})}
@@ -53,11 +73,15 @@ async def run_cli_streaming(
         creationflags=creationflags,
     )
     assert proc.stdout and proc.stderr
+    captured: list[str] = []
     await asyncio.gather(
-        _read_lines(proc.stdout, task_id, store, "stdout"),
-        _read_lines(proc.stderr, task_id, store, "stderr"),
+        _read_lines(proc.stdout, task_id, store, "stdout", captured),
+        _read_lines(proc.stderr, task_id, store, "stderr", captured),
     )
-    return int(await proc.wait())
+    code = int(await proc.wait())
+    merged = "\n".join(captured)
+    merged = _truncate_for_tool(merged, max_tool_chars)
+    return code, merged
 
 
 async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:

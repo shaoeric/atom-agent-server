@@ -64,24 +64,27 @@ async def run_react_agent_task(
     *,
     enable_cli_tool: bool = True,
 ) -> None:
-    """Run ReActAgent with streaming; requires DASHSCOPE_API_KEY for DashScope."""
+    """Run ReActAgent with streaming; OpenAI-compatible API (custom base_url supported)."""
+    from agent_backend.config import get_settings
+
     await store.update_meta(task_id, status="running")
-    api_key = os.environ.get("DASHSCOPE_API_KEY")
+    settings = get_settings()
+    api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         await store.append_event(
             task_id,
             "error",
-            chunk="DASHSCOPE_API_KEY not set; refusing agent mode",
+            chunk="OPENAI_API_KEY not set; refusing agent mode",
             meta={},
         )
         await store.update_meta(task_id, status="failed")
         return
 
     from agentscope.agent import ReActAgent
-    from agentscope.formatter import DashScopeChatFormatter
+    from agentscope.formatter import OpenAIChatFormatter
     from agentscope.memory import InMemoryMemory
     from agentscope.message import Msg, TextBlock
-    from agentscope.model import DashScopeChatModel
+    from agentscope.model import OpenAIChatModel
     from agentscope.pipeline import stream_printing_messages
     from agentscope.tool import Toolkit, ToolResponse
 
@@ -91,7 +94,7 @@ async def run_react_agent_task(
     if enable_cli_tool:
 
         async def cli_exec(command: str) -> ToolResponse:
-            """Example: run packaged demo_cli (argparse subcommands: slow | sleep --seconds N)."""
+            """Example: run packaged demo_cli."""
             parts = shlex.split(command.strip()) if command.strip() else []
             if not parts:
                 return ToolResponse(
@@ -108,17 +111,30 @@ async def run_react_agent_task(
                 "status",
                 chunk=f"cli_start: {' '.join(parts)}",
             )
-            code = await run_cli_streaming(store, task_id, argv)
-            summary = f"exit_code={code}"
-            await store.append_event(task_id, "status", chunk=f"cli_end: {summary}")
+            code, cli_log = await run_cli_streaming(store, task_id, argv)
+            if cli_log:
+                summary = f"exit_code={code}\n--- cli output (for model) ---\n{cli_log}"
+            else:
+                summary = f"exit_code={code}\n(no stdout/stderr lines)"
+            await store.append_event(
+                task_id,
+                "status",
+                chunk=f"cli_end: exit_code={code}",
+            )
             return ToolResponse(content=[TextBlock(type="text", text=summary)])
 
         toolkit.register_tool_function(cli_exec)
 
-    model = DashScopeChatModel(
-        "qwen-turbo",
+    client_kwargs: dict[str, Any] = {}
+    base = (settings.openai_base_url or "").strip()
+    if base:
+        client_kwargs["base_url"] = base
+
+    model = OpenAIChatModel(
+        settings.openai_model,
         api_key=api_key,
         stream=True,
+        client_kwargs=client_kwargs or None,
     )
     agent = ReActAgent(
         name="backend_agent",
@@ -129,13 +145,18 @@ async def run_react_agent_task(
             "Pass only the subcommand and args, e.g. `slow` or `sleep --seconds 2`."
         ),
         model=model,
-        formatter=DashScopeChatFormatter(),
+        formatter=OpenAIChatFormatter(),
         toolkit=toolkit,
         memory=InMemoryMemory(),
     )
 
     async def agent_coroutine():
-        return await agent(Msg("user", prompt))
+        user_msg = Msg(
+            name="user",
+            content=prompt,
+            role="user",
+        )
+        return await agent(user_msg)
 
     async for msg, _last in stream_printing_messages([agent], agent_coroutine()):
         text = _msg_to_text(msg)
