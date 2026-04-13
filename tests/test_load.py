@@ -8,7 +8,7 @@ import uuid
 import pytest
 import redis.asyncio as redis
 
-from agent_backend.store import RedisTaskStore
+from agent_backend.redis_store import RedisTaskStore
 from agent_backend.tasks_execution import execute_task
 
 

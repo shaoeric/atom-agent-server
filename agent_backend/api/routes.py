@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent_backend.store import RedisTaskStore
+from agent_backend.store_protocol import TaskStore
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class TaskCreate(BaseModel):
     )
 
 
-def _store(request: Request) -> RedisTaskStore:
+def _store(request: Request) -> TaskStore:
     return request.app.state.store
 
 
@@ -68,7 +68,7 @@ async def cancel_task(task_id: str, request: Request) -> JSONResponse:
 
 
 async def _sse_stream(
-    store: RedisTaskStore,
+    store: TaskStore,
     task_id: str,
     from_seq: int,
 ) -> Any:
@@ -129,7 +129,7 @@ async def task_events_sse(
 @router.websocket("/tasks/{task_id}/ws")
 async def task_ws(ws: WebSocket, task_id: str) -> None:
     await ws.accept()
-    store: RedisTaskStore = ws.app.state.store
+    store: TaskStore = ws.app.state.store
     meta = await store.get_meta(task_id)
     if not meta:
         await ws.send_json({"error": "task not found"})
@@ -140,8 +140,10 @@ async def task_ws(ws: WebSocket, task_id: str) -> None:
         init = await asyncio.wait_for(ws.receive_json(), timeout=5.0)
         if isinstance(init, dict) and init.get("from_seq") is not None:
             from_seq = int(init["from_seq"])
-    except Exception:
-        pass
+    except WebSocketDisconnect:
+        raise
+    except (asyncio.TimeoutError, TypeError, ValueError, KeyError):
+        from_seq = 0
     for ev in await store.replay_events(task_id, from_seq):
         await ws.send_json(ev)
         if ev.get("type") in ("result", "error"):

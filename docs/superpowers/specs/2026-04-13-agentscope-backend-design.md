@@ -9,7 +9,7 @@
 - 单机/少机部署，约 **50 路并发**长任务（单任务约 10 分钟量级）。
 - **任务隔离**：每任务独立 `task_id`、独立 agent 会话键、CLI 为独立子进程。
 - **传输**：**WebSocket** 与 **SSE** 共用同一事件模型；支持断线后按 **seq** 增量拉取。
-- **持久化**：Redis 保存队列、状态与日志流；进程重启后可继续消费排队任务（运行中任务依 consumer group PEL 再投递策略）。
+- **持久化**：可选 **Redis** 保存队列、状态与日志流；进程重启后可继续消费排队任务（运行中任务依 consumer group PEL 再投递策略）。默认实现为 **内存** 后端（开发/测试），通过配置切换。
 
 ## 2. 状态机
 
@@ -19,12 +19,22 @@
 - `running`：worker 已认领且执行协程未结束。
 - `succeeded` / `failed` / `cancelled`：终态；日志流末尾带 `type=result` 或 `type=error`。
 
-## 3. Redis 键与流
+## 3. 任务队列与存储后端
+
+抽象接口 `TaskStore` 统一：**入队** → **consume_task**（worker 阻塞拉取）→ **ack_delivery**；**append_event** 写日志并 fan-out 到订阅端。
+
+### 3.1 内存（默认）
+
+- **队列**：`asyncio.Queue[(delivery_id, {task_id, payload})]`，语义与 Redis 一条 Stream 消息一致。
+- **元数据 / 日志**：进程内 `dict`；**实时**：每 `task_id` 多个 `asyncio.Queue` 订阅者，行为对齐 Redis Pub/Sub。
+- **约束**：与 API **同进程** 共享 `InMemoryTaskStore` 单例，并由 **嵌入 worker** 消费；单独启动 `worker` 子进程无法共享内存队列。
+
+### 3.2 Redis 键与流
 
 | 键/流 | 说明 |
 |--------|------|
 | `agent:tasks:pending` | Stream：入队任务，`fields`: `task_id`, `payload`（JSON） |
-| `agent:cg:workers` | Consumer group 名称，用于再投递与恢复 |
+| consumer group `workers` | 用于 `XREADGROUP` / `XACK` 与 PEL 再投递 |
 | `task:{task_id}:meta` | Hash：`status`, `user_id`, `created_at`, `updated_at`, `payload` |
 | `task:{task_id}:log` | Stream：事件记录，字段 `data` 为 JSON（含 `seq`） |
 | `task:{task_id}:seq` | String：当前最大 seq（INCR） |

@@ -1,4 +1,4 @@
-"""Async subprocess CLI execution with line-based streaming to Redis-backed events."""
+"""Async subprocess CLI execution with line-based streaming to task log events."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_backend.store import RedisTaskStore
+    from agent_backend.store_protocol import TaskStore
 
 
 async def _read_lines(
     stream: asyncio.StreamReader | None,
     task_id: str,
-    store: "RedisTaskStore",
+    store: "TaskStore",
     stream_name: str,
 ) -> None:
     if stream is None:
@@ -29,7 +29,7 @@ async def _read_lines(
 
 
 async def run_cli_streaming(
-    store: "RedisTaskStore",
+    store: "TaskStore",
     task_id: str,
     argv: list[str],
     *,

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import shlex
+import sys
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agent_backend.store import RedisTaskStore
+    from agent_backend.store_protocol import TaskStore
 
 
 async def run_mock_task(
-    store: "RedisTaskStore",
+    store: "TaskStore",
     task_id: str,
     prompt: str,
     *,
@@ -57,7 +58,7 @@ def _msg_to_text(msg: Any) -> str:
 
 
 async def run_react_agent_task(
-    store: "RedisTaskStore",
+    store: "TaskStore",
     task_id: str,
     prompt: str,
     *,
@@ -90,15 +91,29 @@ async def run_react_agent_task(
     if enable_cli_tool:
 
         async def cli_exec(command: str) -> ToolResponse:
-            """Execute a shell command; streams stdout/stderr to task log, returns short summary."""
-            parts = command.strip().split()
+            """Example: run packaged demo_cli (argparse subcommands: slow | sleep --seconds N)."""
+            parts = shlex.split(command.strip()) if command.strip() else []
             if not parts:
-                return ToolResponse(content=[TextBlock(type="text", text="empty command")])
-            await store.append_event(task_id, "status", chunk=f"cli_start: {command[:200]}")
-            code = await run_cli_streaming(store, task_id, parts)
+                return ToolResponse(
+                    content=[TextBlock(type="text", text="empty command")],
+                )
+            argv = [
+                sys.executable,
+                "-m",
+                "agent_backend.examples.demo_cli",
+                *parts,
+            ]
+            await store.append_event(
+                task_id,
+                "status",
+                chunk=f"cli_start: {' '.join(parts)}",
+            )
+            code = await run_cli_streaming(store, task_id, argv)
             summary = f"exit_code={code}"
             await store.append_event(task_id, "status", chunk=f"cli_end: {summary}")
             return ToolResponse(content=[TextBlock(type="text", text=summary)])
+
+        toolkit.register_tool_function(cli_exec)
 
     model = DashScopeChatModel(
         "qwen-turbo",
@@ -107,7 +122,12 @@ async def run_react_agent_task(
     )
     agent = ReActAgent(
         name="backend_agent",
-        sys_prompt="You are a helpful assistant. Use cli_exec for shell commands when needed.",
+        sys_prompt=(
+            "You are a helpful assistant. "
+            "Use cli_exec with the example CLI: subcommand `slow` (intermittent prints) "
+            "or `sleep --seconds 2` (longer sleep with prints). "
+            "Pass only the subcommand and args, e.g. `slow` or `sleep --seconds 2`."
+        ),
         model=model,
         formatter=DashScopeChatFormatter(),
         toolkit=toolkit,
@@ -117,20 +137,10 @@ async def run_react_agent_task(
     async def agent_coroutine():
         return await agent(Msg("user", prompt))
 
-    try:
-        async for msg, _last in stream_printing_messages([agent], agent_coroutine()):
-            text = _msg_to_text(msg)
-            if text:
-                await store.append_event(task_id, "agent", chunk=text)
-    except Exception as e:
-        await store.append_event(
-            task_id,
-            "error",
-            chunk=str(e),
-            meta={"type": type(e).__name__},
-        )
-        await store.update_meta(task_id, status="failed")
-        return
+    async for msg, _last in stream_printing_messages([agent], agent_coroutine()):
+        text = _msg_to_text(msg)
+        if text:
+            await store.append_event(task_id, "agent", chunk=text)
 
     await store.append_event(task_id, "result", meta={"ok": True, "mode": "agent"})
     await store.update_meta(task_id, status="succeeded")

@@ -1,15 +1,18 @@
-"""Redis Streams consumer: bounded concurrent task execution."""
+"""Task consumer: bounded concurrent execution. Use Redis backend for a standalone process."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 from agent_backend.config import Settings, get_settings
-from agent_backend.store import RedisTaskStore
+from agent_backend.factory import create_store
 from agent_backend.tasks_execution import execute_task, payload_from_raw
+
+if TYPE_CHECKING:
+    from agent_backend.store_protocol import TaskStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,12 +21,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _log_task_done(t: asyncio.Task) -> None:
+    exc = t.exception()
+    if exc is not None:
+        logger.error("task runner raised", exc_info=exc)
+
+
 async def _run_one(
-    store: RedisTaskStore,
-    settings: Settings,
-    msg_id: str,
-    fields: dict[str, str],
+    store: "TaskStore",
     sem: asyncio.Semaphore,
+    delivery_id: str,
+    fields: dict[str, str],
 ) -> None:
     task_id = fields["task_id"]
     raw_payload = fields["payload"]
@@ -32,51 +40,53 @@ async def _run_one(
         async with sem:
             logger.info("running task %s", task_id)
             await execute_task(store, task_id, payload)
-    except Exception:
-        logger.exception("execute_task failed for %s", task_id)
     finally:
-        await store.ack_task(settings.task_stream_key, settings.consumer_group, msg_id)
-        logger.info("acked task %s", task_id)
+        await store.ack_delivery(delivery_id)
+        logger.info("acked delivery %s task=%s", delivery_id, task_id)
 
 
-async def worker_loop(settings: Settings | None = None) -> None:
+async def worker_loop(
+    settings: Settings | None = None,
+    store: "TaskStore | None" = None,
+) -> None:
+    """Poll task queue (Redis Streams or in-memory asyncio.Queue) and run tasks."""
     settings = settings or get_settings()
-    store = RedisTaskStore(settings.redis_url, settings.task_stream_key)
-    await store.connect()
-    await store.ensure_consumer_group(
-        settings.task_stream_key,
-        settings.consumer_group,
-    )
-    sem = asyncio.Semaphore(settings.max_concurrent_tasks)
-    logger.info(
-        "worker listening stream=%s group=%s max_concurrent=%s",
-        settings.task_stream_key,
-        settings.consumer_group,
-        settings.max_concurrent_tasks,
-    )
-    while True:
-        try:
-            streams = await store.r.xreadgroup(
-                groupname=settings.consumer_group,
-                consumername=settings.consumer_name,
-                streams={settings.task_stream_key: ">"},
-                count=20,
-                block=5000,
+    own_store = store is None
+    if store is None:
+        store = create_store(settings)
+        await store.connect()
+    try:
+        await store.ensure_worker_ready()
+        sem = asyncio.Semaphore(settings.max_concurrent_tasks)
+        logger.info(
+            "worker started backend=%s max_concurrent=%s",
+            settings.store_backend,
+            settings.max_concurrent_tasks,
+        )
+        while True:
+            item = await store.consume_task()
+            if item is None:
+                continue
+            delivery_id, fields = item
+            t = asyncio.create_task(
+                _run_one(store, sem, delivery_id, fields),
             )
-        except Exception:
-            logger.exception("xreadgroup failed")
-            await asyncio.sleep(1)
-            continue
-        if not streams:
-            continue
-        for _sk, messages in streams:
-            for msg_id, fields in messages:
-                asyncio.create_task(
-                    _run_one(store, settings, msg_id, fields, sem),
-                )
+            t.add_done_callback(_log_task_done)
+    finally:
+        if own_store:
+            await store.close()
 
 
 def main() -> None:
+    settings = get_settings()
+    if settings.store_backend == "memory":
+        print(
+            "Standalone worker is not supported with store_backend=memory "
+            "(queue is in-process). Run the API with embed_worker=true (default) "
+            "or set STORE_BACKEND=redis for a separate worker process.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     try:
         asyncio.run(worker_loop())
     except KeyboardInterrupt:
