@@ -63,6 +63,7 @@ class InMemoryTaskStore:
         self._cancel: set[str] = set()
         self._listeners: dict[str, list[asyncio.Queue[str | None]]] = defaultdict(list)
         self._lock = asyncio.Lock()
+        self._session_json: dict[str, str] = {}
 
     async def connect(self) -> None:
         return
@@ -180,3 +181,18 @@ class InMemoryTaskStore:
 
     async def ensure_worker_ready(self) -> None:
         return
+
+    async def session_get(self, storage_key: str) -> str | None:
+        async with self._lock:
+            return self._session_json.get(storage_key)
+
+    async def session_set(
+        self,
+        storage_key: str,
+        value: str,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        del ttl_seconds  # in-memory: no TTL
+        async with self._lock:
+            self._session_json[storage_key] = value

@@ -7,6 +7,14 @@
 
   python -m agent_backend.examples.client_sse
   python -m agent_backend.examples.client_sse --base-url http://127.0.0.1:8080 --prompt "hello" --mode mock
+
+多轮对话（同一 session_id 多次提交任务）::
+
+  # 第一轮：自动生成 session_id（stderr 会打印，请记下）
+  python -m agent_backend.examples.client_sse --new-session --mode agent --prompt "你好"
+
+  # 第二轮起：使用同一 session_id
+  python -m agent_backend.examples.client_sse --session-id <上一步打印的 UUID> --mode agent --prompt "接着上面说"
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from typing import Any, Iterator
 
 import httpx
@@ -25,6 +34,7 @@ def submit_task(
     *,
     mode: str | None = None,
     user_id: str | None = None,
+    session_id: str | None = None,
     timeout: float = 30.0,
 ) -> str:
     base = base_url.rstrip("/")
@@ -34,6 +44,8 @@ def submit_task(
         body["mode"] = mode
     if user_id:
         body["user_id"] = user_id
+    if session_id:
+        body["session_id"] = session_id
     with httpx.Client(timeout=timeout) as client:
         r = client.post(url, json=body)
         r.raise_for_status()
@@ -79,13 +91,19 @@ def iter_sse_events(
                             yield json.loads(payload)
 
 
+def _session_id_label(session_id: str | None) -> str:
+    return session_id if session_id else "(未设置)"
+
+
 def run_flow(
     base_url: str,
     prompt: str,
     mode: str | None,
     from_seq: int,
+    session_id: str | None = None,
 ) -> None:
-    task_id = submit_task(base_url, prompt, mode=mode)
+    print(f"session_id={_session_id_label(session_id)}", file=sys.stderr)
+    task_id = submit_task(base_url, prompt, mode=mode, session_id=session_id)
     print(f"task_id={task_id}", file=sys.stderr)
 
     for ev in iter_sse_events(base_url, task_id, from_seq=from_seq):
@@ -96,7 +114,10 @@ def run_flow(
             print(f"[{seq}] {et}: {chunk}")
         else:
             print(f"[{seq}] {et} {ev.get('meta', {})}")
-        if et in ("result", "error"):
+        if et == "result":
+            print(f"session_id={_session_id_label(session_id)}", file=sys.stderr)
+            break
+        if et == "error":
             break
 
 
@@ -106,7 +127,7 @@ def main() -> None:
     p.add_argument("--prompt", default="hello", help="任务提示")
     p.add_argument(
         "--mode",
-        default="mock",
+        default="agent",
         choices=("mock", "agent"),
         help="mock 无需 LLM；agent 需服务端配置 OPENAI_*",
     )
@@ -116,8 +137,29 @@ def main() -> None:
         default=0,
         help="断线重连时从上次的 seq 之后拉取",
     )
+    p.add_argument(
+        "--session-id",
+        default=None,
+        metavar="ID",
+        help="多轮对话：与上一轮相同的字符串（可自造 UUID，或用 --new-session 自动生成）",
+    )
+    p.add_argument(
+        "--new-session",
+        action="store_true",
+        help="为本轮随机生成 session_id 并提交；请根据 stderr 打印的 session_id 在后续命令中传入 --session-id",
+    )
     args = p.parse_args()
-    run_flow(args.base_url, args.prompt, args.mode, args.from_seq)
+    if args.new_session and args.session_id:
+        print("错误：不能同时使用 --new-session 与 --session-id", file=sys.stderr)
+        raise SystemExit(2)
+    session_id = str(uuid.uuid4()) if args.new_session else args.session_id
+    run_flow(
+        args.base_url,
+        args.prompt,
+        args.mode,
+        args.from_seq,
+        session_id=session_id,
+    )
 
 
 if __name__ == "__main__":

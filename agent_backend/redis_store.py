@@ -169,3 +169,18 @@ class RedisTaskStore:
 
     async def ack_delivery(self, delivery_id: str) -> None:
         await self.r.xack(self._task_stream_key, self._consumer_group, delivery_id)
+
+    async def session_get(self, storage_key: str) -> str | None:
+        return await self.r.get(storage_key)
+
+    async def session_set(
+        self,
+        storage_key: str,
+        value: str,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        if ttl_seconds is not None:
+            await self.r.set(storage_key, value, ex=ttl_seconds)
+        else:
+            await self.r.set(storage_key, value)

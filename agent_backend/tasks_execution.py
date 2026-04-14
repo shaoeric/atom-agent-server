@@ -27,7 +27,20 @@ async def execute_task(
             delay_s=float(payload.get("delay_s", 0.05)),
         )
     elif mode == "agent":
-        await run_react_agent_task(store, task_id, prompt)
+        raw_sid = payload.get("session_id")
+        session_id: str | None = None
+        if raw_sid is not None:
+            s = str(raw_sid).strip()
+            if s:
+                session_id = s
+        user_id = str(payload.get("user_id") or "default")
+        await run_react_agent_task(
+            store,
+            task_id,
+            prompt,
+            session_id=session_id,
+            user_id=user_id,
+        )
     else:
         await store.append_event(
             task_id,

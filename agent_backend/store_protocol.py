@@ -57,3 +57,17 @@ class TaskStore(Protocol):
     async def ensure_worker_ready(self) -> None:
         """Redis: create consumer group. Memory: no-op."""
         ...
+
+    async def session_get(self, storage_key: str) -> str | None:
+        """Read persisted session JSON (multi-turn agent memory)."""
+        ...
+
+    async def session_set(
+        self,
+        storage_key: str,
+        value: str,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        """Write session JSON; optional TTL for Redis."""
+        ...

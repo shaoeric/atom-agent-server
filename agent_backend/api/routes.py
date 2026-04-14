@@ -21,6 +21,8 @@ router = APIRouter(tags=["tasks"])
 class TaskCreate(BaseModel):
     prompt: str = ""
     user_id: str | None = None
+    #: 同一 ID 多次任务共享 ReAct 工作记忆；不传则每任务独立上下文。
+    session_id: str | None = None
     mode: str | None = Field(
         default=None,
         description="mock | agent (default from MOCK_AGENT_DEFAULT)",
@@ -44,6 +46,8 @@ async def create_task(body: TaskCreate, request: Request) -> JSONResponse:
     }
     if body.user_id:
         payload["user_id"] = body.user_id
+    if body.session_id is not None and str(body.session_id).strip():
+        payload["session_id"] = str(body.session_id).strip()
     task_id = await store.enqueue_task(payload)
     return JSONResponse({"task_id": task_id, "status": "queued"})
 
